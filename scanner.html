@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Audio Player</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f4f4f4;
+            color: #333;
+            text-align: center;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        #app-container {
+            background-color: #fff;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            max-width: 400px;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #reader {
+            width: 100%;
+            max-width: 300px; /* Adjust scanner size */
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            overflow: hidden; /* Ensure scanner content stays within bounds */
+        }
+
+        #result {
+            margin-top: 20px;
+            font-weight: bold;
+            color: #007bff;
+        }
+
+        #status-message {
+            margin-top: 15px;
+            color: #666;
+            min-height: 20px; /* Reserve space to prevent layout shifts */
+        }
+
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            flex-direction: column; /* Stack buttons on small screens */
+            gap: 15px;
+            width: 100%;
+        }
+
+        button {
+            padding: 12px 25px;
+            font-size: 1.1em;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background-color 0.3s ease, transform 0.2s ease;
+            width: 100%;
+        }
+
+        button:active {
+            transform: scale(0.98);
+        }
+
+        .primary-button {
+            background-color: #007bff;
+            color: white;
+        }
+
+        .primary-button:hover {
+            background-color: #0056b3;
+        }
+
+        .secondary-button {
+            background-color: #6c757d;
+            color: white;
+        }
+
+        .secondary-button:hover {
+            background-color: #5a6268;
+        }
+
+        /* Hide the YouTube player visually but keep it functional */
+        #player-container {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+            opacity: 0;
+            pointer-events: none; /* Prevent interaction */
+        }
+    </style>
+</head>
+<body>
+    <div id="app-container">
+        <h1>Scan QR for Music</h1>
+        <div id="reader"></div>
+        <p id="status-message">Awaiting camera access...</p>
+
+        <div class="controls">
+            <button id="playButton" class="primary-button" style="display: none;">Play</button>
+            <button id="pauseButton" class="secondary-button" style="display: none;">Pause</button>
+            <button id="scanNewButton" class="primary-button" style="display: none;">Scan New QR</button>
+        </div>
+    </div>
+
+    <div id="player-container">
+        <div id="youtube-player"></div>
+    </div>
+
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+    <script>
+        let html5QrCode;
+        let qrCodeSuccessCallback;
+        let player;
+        let currentVideoId = null;
+
+        const statusMessage = document.getElementById('status-message');
+        const playButton = document.getElementById('playButton');
+        const pauseButton = document.getElementById('pauseButton');
+        const scanNewButton = document.getElementById('scanNewButton');
+
+        // Function to update status message
+        function updateStatus(message) {
+            statusMessage.textContent = message;
+        }
+
+        // Function to start the QR scanner
+        function startScanner() {
+            updateStatus('Scanning for QR code...');
+            playButton.style.display = 'none';
+            pauseButton.style.display = 'none';
+            scanNewButton.style.display = 'none';
+
+            if (player) {
+                player.stopVideo();
+            }
+
+            if (!html5QrCode) {
+                html5QrCode = new Html5Qrcode("reader");
+            }
+
+            qrCodeSuccessCallback = (decodedText, decodedResult) => {
+                console.log(`QR Code scanned: ${decodedText}`);
+                updateStatus('QR Code scanned successfully!');
+                html5QrCode.stop().then(() => {
+                    handleYouTubeUrl(decodedText);
+                }).catch((err) => {
+                    console.error(`Unable to stop scanning: ${err}`);
+                    updateStatus('Error stopping scanner. Please refresh.');
+                });
+            };
+
+            const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+            html5QrCode.start({ facingMode: "environment" }, config, qrCodeSuccessCallback, (errorMessage) => {
+                // console.log(`QR Scan error: ${errorMessage}`); // Too verbose for continuous errors
+            })
+            .catch((err) => {
+                console.error(`Error starting QR scanner: ${err}`);
+                if (err.message.includes("NotAllowedError") || err.message.includes("Permission denied")) {
+                    updateStatus('Camera access denied. Please grant camera permissions.');
+                } else if (err.message.includes("OverconstrainedError")) {
+                    updateStatus('No suitable camera found or already in use.');
+                } else {
+                    updateStatus(`Error: ${err.message}`);
+                }
+            });
+        }
+
+        // Function to extract YouTube video ID
+        function getYouTubeVideoId(url) {
+            let videoId = null;
+            const urlObj = new URL(url);
+
+            if (urlObj.hostname.includes('youtube.com')) {
+                videoId = urlObj.searchParams.get('v');
+            } else if (urlObj.hostname.includes('youtu.be')) {
+                videoId = urlObj.pathname.split('/')[1];
+            }
+            return videoId;
+        }
+
+        // Handle the scanned YouTube URL
+        function handleYouTubeUrl(url) {
+            const videoId = getYouTubeVideoId(url);
+            if (videoId) {
+                currentVideoId = videoId;
+                updateStatus('Loading music...');
+                loadYouTubePlayer(); // Ensure player is loaded before loading video
+                if (player) {
+                    player.loadVideoById(videoId);
+                }
+                playButton.style.display = 'none';
+                pauseButton.style.display = 'inline-block'; // Show pause initially
+                scanNewButton.style.display = 'inline-block';
+            } else {
+                updateStatus('QR code does not contain a valid YouTube video URL. Please scan another.');
+                scanNewButton.style.display = 'inline-block'; // Allow rescanning
+                startScanner(); // Restart scanner if invalid URL
+            }
+        }
+
+        // Load YouTube IFrame Player API asynchronously
+        function loadYouTubePlayer() {
+            if (player) return; // Player already exists
+
+            updateStatus('Initializing music player...');
+            const tag = document.createElement('script');
+            tag.src = "https://www.youtube.com/iframe_api";
+            const firstScriptTag = document.getElementsByTagName('script')[0];
+            firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+        }
+
+        // This function is called by the YouTube IFrame Player API when it's ready
+        window.onYouTubeIframeAPIReady = function() {
+            player = new YT.Player('youtube-player', {
+                height: '1', /* Smallest possible to hide */
+                width: '1',  /* Smallest possible to hide */
+                videoId: currentVideoId || '', // Initial video ID (can be empty)
+                playerVars: {
+                    'autoplay': 1,      /* Autoplay video */
+                    'controls': 0,      /* Hide controls */
+                    'rel': 0,           /* No related videos */
+                    'showinfo': 0,      /* Hide video title and uploader info */
+                    'modestbranding': 1 /* Hide YouTube logo */
+                },
+                events: {
+                    'onReady': onPlayerReady,
+                    'onStateChange': onPlayerStateChange,
+                    'onError': onPlayerError
+                }
+            });
+        };
+
+        // When the player is ready
+        function onPlayerReady(event) {
+            updateStatus('Music ready!');
+            if (currentVideoId) {
+                event.target.playVideo(); // Start playing immediately
+                playButton.style.display = 'none';
+                pauseButton.style.display = 'inline-block';
+            }
+        }
+
+        // When the player's state changes
+        function onPlayerStateChange(event) {
+            // YT.PlayerState.ENDED, YT.PlayerState.PLAYING, YT.PlayerState.PAUSED, etc.
+            if (event.data === YT.PlayerState.PLAYING) {
+                updateStatus('Playing music...');
+                playButton.style.display = 'none';
+                pauseButton.style.display = 'inline-block';
+            } else if (event.data === YT.PlayerState.PAUSED) {
+                updateStatus('Music paused.');
+                playButton.style.display = 'inline-block';
+                pauseButton.style.display = 'none';
+            } else if (event.data === YT.PlayerState.ENDED) {
+                updateStatus('Music ended. Scan new QR.');
+                playButton.style.display = 'none';
+                pauseButton.style.display = 'none';
+                scanNewButton.style.display = 'inline-block';
+            } else if (event.data === YT.PlayerState.BUFFERING) {
+                updateStatus('Buffering...');
+            }
+        }
+
+        // On player error
+        function onPlayerError(event) {
+            console.error('YouTube Player Error:', event.data);
+            updateStatus('Error playing music. This video might not be available or playable.');
+            playButton.style.display = 'none';
+            pauseButton.style.display = 'none';
+            scanNewButton.style.display = 'inline-block';
+        }
+
+        // Event Listeners for buttons
+        playButton.addEventListener('click', () => {
+            if (player && player.playVideo) {
+                player.playVideo();
+            }
+        });
+
+        pauseButton.addEventListener('click', () => {
+            if (player && player.pauseVideo) {
+                player.pauseVideo();
+            }
+        });
+
+        scanNewButton.addEventListener('click', () => {
+            if (player) {
+                player.stopVideo(); // Stop any currently playing video
+            }
+            currentVideoId = null; // Clear current video
+            startScanner(); // Restart the scanner
+        });
+
+        // Initialize the scanner on page load
+        document.addEventListener('DOMContentLoaded', startScanner);
+
+    </script>
+</body>
+</html>
